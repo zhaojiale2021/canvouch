@@ -12,10 +12,13 @@ from crc_checker.file_types import TRACE_EXTENSIONS
 from crc_checker.core.models import CRCParams
 from crc_checker.crc.presets import get_preset, get_validation, list_presets
 from crc_checker.dbc.parser import parse_dbc
-from crc_checker.report.html import write_html
-from crc_checker.report.serializer import reports_to_dict
-from crc_checker.report.trends import check_sample_stats, format_rate
 from crc_checker import __version__
+from cli.output import (
+    _exit_after_reports,
+    _output_report,
+    _print_json_reports,
+    _report_output_path,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +47,7 @@ class GroupedCommand(click.Command):
         ("Filters", {"frame_ids", "max_frames"}),
         ("Output", {
             "output_fmt", "output_file", "json_file", "only_failures",
-            "show_all", "max_report_sections",
+            "show_all", "group_by", "max_report_sections",
         }),
         ("CI gates", {"fail_on_failure", "min_pass_rate", "allow_empty", "allow_truncated"}),
     )
@@ -196,175 +199,6 @@ def _echo_verbose_setup(setup, trace_paths: list[str], *, err: bool = False,
         out(f"  {path}")
 
 
-def _print_summary(report):
-    """Print the sample-based summary and any run caveats."""
-    passed, total = check_sample_stats(report)
-    click.echo()
-    click.echo("=" * 60)
-    click.echo(f"SUMMARY: {report.total_frames} frames, "
-               f"{passed} passed, {total - passed} failed "
-               f"({format_rate(passed, total)} pass rate)")
-    if report.frames_truncated:
-        click.echo(click.style(
-            f"WARNING: stopped at the frame cap ({report.frame_limit} frames); "
-            "the rest of the trace was NOT verified.", fg="yellow", bold=True))
-    if report.dlc_mismatch_skipped:
-        click.echo(click.style(
-            f"NOTE: {report.dlc_mismatch_skipped} frame(s) skipped by the "
-            "DLC gate.", fg="yellow"))
-    if total == 0:
-        click.echo(click.style(
-            "WARNING: no checks were performed (no matching protection "
-            "signals).", fg="yellow", bold=True))
-
-
-# pylint: disable=too-many-arguments,too-many-positional-arguments
-def _output_report(report, output_fmt: str, output_file: str,
-                   only_failures: bool, max_sections: int | None = None,
-                   *, table_only_failures: bool = True):
-    """Render verification report as table or HTML, then print the summary."""
-    if output_fmt == "html":
-        path = output_file or "crc_report.html"
-        note = write_html(report, path, only_failures, max_sections=max_sections)
-        if note:
-            click.echo(f"Report restricted: {note}")
-        click.echo(f"HTML: {path}")
-        _print_summary(report)
-    else:
-        _print_table(report, table_only_failures)
-
-
-def _exit_after_reports(reports, fail_on_failure: bool,
-                        min_pass_rate: float | None,
-                        allow_empty: bool = False,
-                        allow_truncated: bool = False) -> None:
-    """Exit 1 when the run should fail a CI gate.
-
-    ``--fail-on-failure`` catches any failed check; ``--min-pass-rate``
-    applies to the aggregate across all reports. Gated runs with no checks or
-    a truncated trace fail closed unless explicitly allowed.
-    """
-    passed = sum(check_sample_stats(report)[0] for report in reports)
-    total = sum(check_sample_stats(report)[1] for report in reports)
-    failed = total - passed
-    gate_requested = fail_on_failure or min_pass_rate is not None
-    rate = (passed / total * 100.0) if total else 100.0
-    empty_failure = gate_requested and total == 0 and not allow_empty
-    truncated_failure = (gate_requested and not allow_truncated
-                         and any(report.frames_truncated for report in reports))
-    if any((empty_failure, truncated_failure, (fail_on_failure and failed),
-            (min_pass_rate is not None and rate < min_pass_rate))):
-        raise click.exceptions.Exit(1)
-
-
-def _print_json_reports(reports, output_path: str | None = None,
-                        only_failures: bool = False) -> None:
-    """Write a single JSON document for a run to standard output or a file."""
-    document = {"schema_version": 1,
-                **reports_to_dict(reports, only_failures=only_failures)}
-    output = json.dumps(document, ensure_ascii=False, indent=2)
-    if output_path:
-        Path(output_path).write_text(output + "\n", encoding="utf-8")
-    else:
-        click.echo(output)
-
-
-def _safe_report_stem(trace_path: str) -> str:
-    """Filesystem-safe stem for the per-trace report suffix (keeps CJK)."""
-    stem = Path(trace_path).stem if trace_path else "trace"
-    cleaned = re.sub(r"[^\w.-]+", "_", stem).strip("._")
-    return cleaned or "trace"
-
-
-def _report_output_path(base_path: str, report, multiple: bool,
-                        index: int | None = None) -> str:
-    """Output path for one report.
-
-    A single trace keeps the configured path untouched. With several traces the
-    configured path would be overwritten by every iteration, so each report gets
-    the trace's file stem (plus its 1-based index, which also disambiguates
-    same-named traces from different directories) appended:
-    ``report.html`` → ``report_1_trace_a.html``. Split parts derive from that
-    unique name too.
-    """
-    if not multiple:
-        return base_path
-    path = Path(base_path or "crc_report.html")
-    suffix = path.suffix or ".html"
-    stem = _safe_report_stem(getattr(report, "trace_path", ""))
-    if index is not None:
-        stem = f"{index}_{stem}"
-    return str(path.with_name(f"{path.stem}_{stem}{suffix}"))
-
-
-# pylint: disable=too-many-locals
-def _fit(text: str, width: int) -> str:
-    """Truncate a table cell so one long DBC signal name cannot break the table."""
-    text = str(text)
-    return text if len(text) <= width else text[:width - 1] + "~"
-
-
-def _terminal_text(text: str) -> str:
-    """Make verifier prose safe for legacy Windows consoles (cp936/cp1252)."""
-    return (str(text)
-            .replace("·", "|")
-            .replace("×", "x")
-            .replace("—", "-")
-            .replace("–", "-"))
-
-
-def _print_table(report, only_failures: bool = False):
-    """Print results as a formatted table to terminal."""
-    verdicts = report.failed if only_failures else report.verdicts
-
-    if not verdicts:
-        click.echo("No failed verdicts." if only_failures
-                   else "No verification results.")
-        _print_summary(report)
-        return
-
-    # Column widths
-    ts_w, id_w, ch_w, sig_w, algo_w, exp_w, act_w = 12, 10, 5, 25, 16, 10, 10
-
-    # Header
-    header = (
-        f"{'Timestamp':<{ts_w}} {'CAN ID':<{id_w}} {'CH':<{ch_w}} "
-        f"{'Signal':<{sig_w}} {'Algorithm':<{algo_w}} {'Expected':<{exp_w}} "
-        f"{'Actual':<{act_w}} Verdict"
-    )
-    click.echo(header)
-    click.echo("-" * len(header))
-
-    for v in verdicts:
-        status = (
-            click.style("PASS", fg="green")
-            if v.is_pass
-            else click.style("FAIL", fg="red", bold=True)
-        )
-        exp_str = f"0x{v.expected_value:0{max(1, (v.expected_value.bit_length() + 7) // 8) * 2}X}"
-        act_str = f"0x{v.actual_value:0{max(1, (v.actual_value.bit_length() + 7) // 8) * 2}X}"
-        # ``algorithm`` is only "crc"/"rolling_counter"; the real preset lives
-        # in ``crc_algorithm`` and matters when a bus mixes algorithms.
-        algorithm = v.crc_algorithm or v.algorithm
-
-        line = (
-            f"{v.timestamp:>{ts_w}.6f} "
-            f"{f'0x{v.frame_id:03X}':<{id_w}} "
-            f"{getattr(v, 'channel', 0):<{ch_w}} "
-            f"{_fit(v.signal_name, sig_w):<{sig_w}} "
-            f"{_fit(algorithm, algo_w):<{algo_w}} "
-            f"{exp_str:<{exp_w}} "
-            f"{act_str:<{act_w}} "
-            f"{status}"
-        )
-        click.echo(line)
-
-        if not v.is_pass and v.detail:
-            click.echo(f"  {click.style(_terminal_text(v.detail), fg='yellow')}")
-
-    _print_summary(report)
-
-
 @click.group()
 @click.version_option(__version__, prog_name="canvouch")
 def cli():
@@ -438,7 +272,11 @@ def cli():
                    "just the failed verdicts; HTML output keeps the failing "
                    "frame's passing verdicts too for context")
 @click.option("--show-all", is_flag=True,
-              help="Table output: also print passing checks (default: failures only)")
+              help="Table output: print every raw verdict instead of the "
+                   "per-signal aggregate")
+@click.option("--group-by", "group_by", default="signal",
+              type=click.Choice(["signal", "frame"]), show_default=True,
+              help="Table aggregation when --show-all is not set")
 @click.option("--max-report-sections", type=int, default=None,
               help="HTML report frame-section cap (0 = unlimited, default 30000)")
 @click.option("--max-frames", type=int, default=DEFAULT_MAX_FRAMES,
@@ -465,9 +303,9 @@ def verify(dbc_paths, trace_files, algo, custom_crc,
            dataid_xlsx, dataid_json, dataid_sheet, dataid_mapping,
            dataid_mapping_file, dataid_position, dataid_byte_order, dataid_default,
            dbc_merge, frame_ids, output_fmt, output_file,
-           only_failures, show_all, max_report_sections, max_frames, verbose,
-           fail_on_failure, min_pass_rate, allow_empty, allow_truncated,
-           json_file):
+           only_failures, show_all, group_by, max_report_sections, max_frames,
+           verbose, fail_on_failure, min_pass_rate, allow_empty,
+           allow_truncated, json_file):
     """Verify CRC and Rolling Counter in CAN trace files.
 
     This builds a RunConfig and calls the same ``run_config`` pipeline as
@@ -586,13 +424,13 @@ def verify(dbc_paths, trace_files, algo, custom_crc,
         _print_json_reports(reports, json_file or output_file, only_failures)
     else:
         multiple_reports = len(reports) > 1
-        table_only_failures = only_failures or not show_all
         for index, report in enumerate(reports, start=1):
             _output_report(report, output_fmt,
                            _report_output_path(output_file, report, multiple_reports,
                                                index=index),
                            only_failures,
-                           table_only_failures=table_only_failures)
+                           cfg.max_report_sections,
+                           show_all=show_all, group_by=group_by)
     _exit_after_reports(reports, fail_on_failure, min_pass_rate,
                         allow_empty, allow_truncated)
 
@@ -623,7 +461,11 @@ def list_presets_cmd():
               type=click.Path(exists=True), help="Path to JSON config file")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.option("--show-all", is_flag=True,
-              help="Table output: also print passing checks (default: failures only)")
+              help="Table output: print every raw verdict instead of the "
+                   "per-signal aggregate")
+@click.option("--group-by", "group_by", default="signal",
+              type=click.Choice(["signal", "frame"]), show_default=True,
+              help="Table aggregation when --show-all is not set")
 @click.option("--fail-on-failure", is_flag=True,
               help="Exit 1 if any check fails (use in CI)")
 @click.option("--min-pass-rate", type=click.FloatRange(0, 100), default=None,
@@ -632,9 +474,9 @@ def list_presets_cmd():
               help="Allow a CI gate to pass when no checks were performed")
 @click.option("--allow-truncated", is_flag=True,
               help="Allow a CI gate to pass when a trace hit its frame cap")
-# pylint: disable=too-many-branches,too-many-statements,too-many-arguments,too-many-positional-arguments
-def run_cmd(config_path, verbose, show_all, fail_on_failure, min_pass_rate,
-            allow_empty, allow_truncated):
+# pylint: disable=too-many-branches,too-many-statements,too-many-arguments,too-many-positional-arguments,too-many-locals
+def run_cmd(config_path, verbose, show_all, group_by, fail_on_failure,
+            min_pass_rate, allow_empty, allow_truncated):
     """Run verification from a JSON config file.
 
     Generate an example config:  canvouch gen-config example.json
@@ -692,13 +534,12 @@ def run_cmd(config_path, verbose, show_all, fail_on_failure, min_pass_rate,
         _print_json_reports(reports, cfg.output_file or None, cfg.only_failures)
     else:
         multiple_reports = len(reports) > 1
-        table_only_failures = cfg.only_failures or not show_all
         for index, report in enumerate(reports, start=1):
             _output_report(report, cfg.output_format,
                            _report_output_path(cfg.output_file, report, multiple_reports,
                                                index=index),
                            cfg.only_failures, cfg.max_report_sections,
-                           table_only_failures=table_only_failures)
+                           show_all=show_all, group_by=group_by)
     _exit_after_reports(reports, fail_on_failure, min_pass_rate,
                         allow_empty, allow_truncated)
 
@@ -767,10 +608,154 @@ def gen_config_cmd(output_path):
     click.echo(f"Edit it, then: canvouch run -c {output_path}")
 
 
+@cli.command("validate-config")
+@click.argument("config_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--quiet", is_flag=True, help="Only print warnings and errors")
+# pylint: disable=import-outside-toplevel
+def validate_config_cmd(config_path, quiet):
+    """Check a JSON config without parsing any trace file.
+
+    Resolves every configured path, checks the workbook sheets and named
+    mappings, compiles the signal-name patterns and reports per-section
+    diagnostics. Exits non-zero when anything would fail the run.
+    """
+    from crc_checker.config_check import has_errors, validate_config_file
+
+    issues = validate_config_file(config_path)
+    colors = {"ok": "green", "warning": "yellow", "error": "red"}
+    labels = {"ok": "OK", "warning": "WARN", "error": "ERROR"}
+    for issue in issues:
+        if quiet and issue.level == "ok":
+            continue
+        label = click.style(f"[{labels[issue.level]}]", fg=colors[issue.level])
+        click.echo(f"{label} {issue.section}: {issue.message}")
+    errors = sum(1 for issue in issues if issue.level == "error")
+    warnings = sum(1 for issue in issues if issue.level == "warning")
+    if has_errors(issues):
+        click.echo(f"Config invalid: {errors} error(s), {warnings} warning(s).",
+                   err=True)
+        raise click.exceptions.Exit(1)
+    click.echo(f"Config OK ({warnings} warning(s)).")
+
+
+# pylint: disable=too-many-locals
+def _run_explain(config_path, trace_files):
+    """Load a config, resolve it and print every group's effective settings."""
+    # pylint: disable=import-outside-toplevel
+    from crc_checker.config import load_config
+    from crc_checker.verify.runner import RunnerError, build_protection_map
+
+    try:
+        cfg = load_config(config_path)
+    except (OSError, ValueError, TypeError) as exc:
+        raise click.BadParameter(f"Failed to read config file: {exc}") from exc
+    for warning in cfg.warnings:
+        click.echo(f"Config warning: {warning}", err=True)
+
+    trace_paths: list[str] | None = list(trace_files) or None
+    trace_error: FileNotFoundError | None = None
+    if trace_paths is None:
+        try:
+            trace_paths = cfg.get_trace_paths()
+        except FileNotFoundError as exc:
+            # One DBC needs no trace; several DBCs do (channel selection).
+            trace_paths = None
+            trace_error = exc
+    try:
+        setup = build_protection_map(cfg, trace_sample=trace_paths,
+                                     collect_diagnostics=True)
+    except RunnerError as exc:
+        # Several DBCs and no usable trace: surface the real path error
+        # instead of the generic "need a trace sample" message.
+        if trace_error is not None and "Need a trace file" in str(exc):
+            raise click.UsageError(str(trace_error)) from exc
+        raise click.UsageError(str(exc)) from exc
+    except (ValueError, OSError, KeyError, TypeError, re.error) as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    click.echo(f"Resolved configuration: {config_path}")
+    for note in setup.notes:
+        click.echo(f"  {note}")
+    click.echo()
+
+    groups = sorted(
+        setup.resolved_groups,
+        key=lambda group: (
+            group.channel if group.channel is not None else -1,
+            group.frame_id, group.pair_suffix, group.checksum_signal))
+    for group in groups:
+        channel = ("fallback" if group.channel is None
+                   else f"CH{group.channel}")
+        title = f"0x{group.frame_id:03X} {group.frame_name}"
+        if group.pair_suffix:
+            title += f" [{group.pair_suffix}]"
+        click.echo(f"{title}  ({channel})")
+        checksum = (f"{group.checksum_signal} ({group.checksum_bits} bits)"
+                    if group.checksum_signal else "-")
+        click.echo(f"  checksum:  {checksum}")
+        click.echo(f"  algorithm: {group.algorithm or '-'}   "
+                   f"profile: {group.profile or '-'}")
+        dataid = (f"0x{group.dataid:04X}"
+                  if group.dataid is not None else "-")
+        source = f" ({group.dataid_source})" if group.dataid_source else ""
+        click.echo(f"  range:     {group.range_text}   "
+                   f"DataID: {dataid}{source}")
+        rc_limit = (f"0..{group.rc_limit}"
+                    if group.rc_limit is not None else "-")
+        click.echo(f"  counter:   {group.rc_signal or '-'}  {rc_limit}")
+        if group.skip_reason:
+            click.echo(click.style(
+                f"  status:    {group.status}", fg="yellow"))
+        else:
+            click.echo(f"  status:    {group.status}")
+        click.echo()
+
+    skipped = sum(1 for group in groups if group.skipped)
+    dropped = sum(1 for group in groups if group.checksum_dropped)
+    click.echo(f"{len(groups)} protection group(s), {skipped} skipped, "
+               f"{dropped} checksum(s) dropped.")
+
+
+@cli.command("explain")
+@click.option("--config", "-c", "config_path", required=True,
+              type=click.Path(exists=True, dir_okay=False),
+              help="Path to JSON config file")
+@click.option("--trace", "trace_files", multiple=True,
+              type=click.Path(exists=True),
+              help="Trace file(s) used only to pick a DBC per channel")
+def explain_cmd(config_path, trace_files):
+    """Show the fully resolved configuration for every protection group.
+
+    ``inspect <dbc>`` lists DBC signal positions; this view (also available as
+    ``inspect --config``) prints the algorithm, E2E profile, CRC range, DataID
+    value/source, counter limit and skip reason that a run would actually use.
+    """
+    _run_explain(config_path, trace_files)
+
+
 @cli.command()
-@click.argument("dbc_path", type=click.Path(exists=True))
-def inspect(dbc_path):
-    """Inspect a DBC file (or directory of DBCs) and list detected signals."""
+@click.argument("dbc_path", required=False, type=click.Path(exists=True))
+@click.option("--config", "config_path",
+              type=click.Path(exists=True, dir_okay=False),
+              help="Show the resolved configuration from a JSON config instead")
+@click.option("--trace", "trace_files", multiple=True,
+              type=click.Path(exists=True),
+              help="With --config: trace sample(s) for per-channel DBC selection")
+# pylint: disable=import-outside-toplevel
+def inspect(dbc_path, config_path, trace_files):
+    """Inspect a DBC file (or directory of DBCs) and list detected signals.
+
+    With ``--config``, print the configuration every protection group will
+    actually use (same view as ``canvouch explain``).
+    """
+    if config_path:
+        if dbc_path:
+            raise click.UsageError("Use either a DBC path or --config, not both.")
+        _run_explain(config_path, trace_files)
+        return
+    if not dbc_path:
+        raise click.UsageError("Provide a DBC path (or --config).")
+
     # Same expansion rule as verify's --dbc: a directory means every *.dbc
     # directly inside it.
     path = Path(dbc_path)

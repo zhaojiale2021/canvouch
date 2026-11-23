@@ -1,6 +1,6 @@
 # CanVouch roadmap
 
-Last updated: 2026-11-20 · Current release: **v0.2.1** · Status: living document
+Last updated: 2026-11-23 · Current release: **v0.2.1** · Status: living document
 
 CanVouch already answers the core question — *does this captured trace match the
 protection the DBC promises?* — for a single project, from both the CLI and the
@@ -16,9 +16,9 @@ it, and compare runs over time.
 | Signal discovery | Prefix/suffix regexes, bus markers, indexed instances, block-counter exclusion, custom YAML | High |
 | Algorithms | E2E P1/1A/P5, CRC8/16/32 presets, SUM8, SUM8/XOR-FF, XOR8/SEED, custom params, DBC-comment classification, per-message overrides/profiles | High |
 | Verification | CRC, RC continuity (PASS/STALE/SKIP/RESET/INVALID), per-channel state, DLC gate, folded failure episodes | High |
-| Output | Table, JSON (`schema_version: 1`), self-contained HTML with byte highlighting, RC trend charts, split reports | High |
+| Output | Sample-aware CLI summary (`--group-by signal|frame`, `--show-all` raw), JSON (`schema_version: 1`), self-contained HTML with byte highlighting, RC trend charts, split reports (all parts announced) | High |
 | Web | Project mode, manual upload, sample traces, async jobs, cancel, token gate, upload caps, version panel | Medium |
-| Engineering | 410 tests, 80 % coverage gate, pylint 10.00, Python 3.11–3.13 + Windows CI, wheel smoke, Docker image, PyPI/GHCR release | High |
+| Engineering | 453 tests, 80 % coverage gate, pylint 10.00, Python 3.11–3.13 + Windows CI, wheel smoke, Docker image, PyPI/GHCR release | High |
 
 Known weak spots (from the 2026-11-20 review) are listed in
 [Open issues](#open-issues-not-fixed-in-this-pass) below.
@@ -35,20 +35,22 @@ Known weak spots (from the 2026-11-20 review) are listed in
 4. **No customer data in the repository.** All examples stay synthetic; every
    capability stays configuration-driven.
 
-## Now — v0.3 (next 4–6 weeks): correctness and CLI ergonomics
+## Shipped — v0.3 (2026-11-23): correctness and CLI ergonomics
+
+All items below are shipped; regression tests cover each behaviour.
 
 | Item | Why | Acceptance |
 | --- | --- | --- |
-| **Resolve the review's correctness fixes** | Profile reclassification, comment-only P05/P01, channel fallback and global RC overrides produced wrong or false-clean results | Shipped in this pass; keep regression tests for each case |
-| **UTF-8 / encoding hardening** | Chinese Windows consoles and DBC files are the primary environment | All CLI output round-trips on cp936 consoles; GBK DBC regression tests stay green |
-| **CLI result aggregation** | A broken CRC on a 6 000-frame trace prints thousands of rows | Default per-frame/signal summary; `--show-all` keeps raw verdicts; `--group-by` optional |
-| **`canvouch validate-config`** | Users discover config errors only after a full trace run | Loads a config, resolves paths, prints per-section diagnostics, exits non-zero on error; no trace parsing |
-| **`inspect --config` / `explain`** | `inspect` only shows signal positions, not the algorithm/range/DataID that will actually run | Prints per message: algorithm, profile, CRC range, DataID value/source, skip reason, counter limit |
-| **Config error messages** | Nested type errors used to reach the worker and surface as a 500 | Every schema-shaped field is type-checked at load time with the offending key named |
-| **Report split notice** | Split parts (`_p2.html`…) are silent | CLI prints every written part |
-| **Docs drift** | Pylint version, CI matrix, JSON output and validation wording were stale | README/zh/CONTRIBUTING updated to match `requirements.txt` and `ci.yml` (a docs test can follow) |
+| ✅ **Resolve the review's correctness fixes** | Profile reclassification, comment-only P05/P01, channel fallback and global RC overrides produced wrong or false-clean results | Shipped in this pass; regression tests cover each case |
+| ✅ **UTF-8 / encoding hardening** | Chinese Windows consoles and DBC files are the primary environment | All CLI output round-trips on cp936 consoles; GBK DBC regression tests stay green |
+| ✅ **CLI result aggregation** | A broken CRC on a 6 000-frame trace prints thousands of rows | Default per-signal (or `--group-by frame`) summary with sample counts; `--show-all` keeps raw verdicts |
+| ✅ **`canvouch validate-config`** | Users discover config errors only after a full trace run | Loads a config, resolves paths, checks workbook sheets/mappings/output dirs, prints per-section diagnostics, exits non-zero on error; no trace parsing |
+| ✅ **`inspect --config` / `explain`** | `inspect` only showed signal positions, not the algorithm/range/DataID that will actually run | Prints per message: algorithm, profile, CRC range, DataID value/source, skip reason, counter limit |
+| ✅ **Config error messages** | Nested type errors used to reach the worker and surface as a 500 | Every schema-shaped field is type-checked at load time with the offending key named |
+| ✅ **Report split notice** | Split parts (`_p2.html`…) were silent | CLI prints every written part |
+| ✅ **Docs drift** | Pylint version, CI matrix, JSON output and validation wording were stale | README/zh/CONTRIBUTING updated to match `requirements.txt` and `ci.yml` |
 
-## Next — v0.4 (1–2 quarters): onboarding and CI
+## Now — v0.4 (next 1–2 quarters): onboarding and CI
 
 ### N1. `canvouch discover` — infer the protection configuration
 
@@ -123,7 +125,9 @@ candidates by pass rate and coverage.
 | E2E P2/P4/P7/P22 | | | | ◻ |
 | Comment classification | ✅ | width diagnostics | | |
 | Algorithm discovery | | | ◻ | |
-| Resolved-config explain | | ◻ | | |
+| Resolved-config explain | | ✅ | | |
+| Config validation | | ✅ | | |
+| CLI result aggregation | | ✅ | | |
 | RC gap tolerance / resync | | | ◻ | |
 | Coverage diagnostics | partial | | ◻ | |
 | JSON output | ✅ | docs | | |
@@ -149,29 +153,26 @@ Ranked by risk. Each is a candidate GitHub issue.
    and RC trend points are materialised before `_bounded_result` runs, and the
    full payload is retained in the run store. Add caps at serialisation time and
    bound `RunOutcome.payload`.
-3. **CLI failure output is not aggregated (Medium).** See v0.3 item.
-4. **No resolved-config view (Medium).** `inspect` ignores the config and
-   classification decisions.
-5. **Web manual mode cannot express custom/advanced CRC config (Medium).**
-6. **Release workflow does not create a GitHub Release (Medium).** The release
+3. **Web manual mode cannot express custom/advanced CRC config (Medium).**
+4. **Release workflow does not create a GitHub Release (Medium).** The release
    badge and `pyproject.toml` changelog link point at `/releases`; tags only
    publish PyPI/GHCR. Also check `frontend/package.json` version against
    `crc_checker.__version__`.
-7. **Docker uses Python 3.14, which CI does not test (Medium).** Pin the image
+5. **Docker uses Python 3.14, which CI does not test (Medium).** Pin the image
    to a tested interpreter or extend the matrix, and add a Docker build smoke
    job.
-8. **Wheels ship no `examples/` (Low-Medium).** `pip install canvouch[web]`
+6. **Wheels ship no `examples/` (Low-Medium).** `pip install canvouch[web]`
    starts with an empty project list; package the example or document manual
    mode for pip installs.
-9. **Fuzzy DataID matching can copy a sibling instance's DataID (Low-Medium).**
+7. **Fuzzy DataID matching can copy a sibling instance's DataID (Low-Medium).**
    Improve the sibling guard and report a missing entry instead of guessing.
-10. **`parse_sum_byte_range` widens on unrelated byte mentions (Low).** Limit
-    the range to the contiguous list before any "checksum lives in" phrase.
-11. **Unsupported E2E profile numbers still fall through to generic CRC (Low).**
-    Prefer an explicit "unsupported profile" skip over a plausible wrong CRC.
-12. **Dependency audits are scheduled, not PR gates (Low).**
-13. **Pre-push hook has no POSIX installer (Low).**
-14. **`gen-config` defaults to an unverified preset (Low).** It warns
+8. **`parse_sum_byte_range` widens on unrelated byte mentions (Low).** Limit
+   the range to the contiguous list before any "checksum lives in" phrase.
+9. **Unsupported E2E profile numbers still fall through to generic CRC (Low).**
+   Prefer an explicit "unsupported profile" skip over a plausible wrong CRC.
+10. **Dependency audits are scheduled, not PR gates (Low).**
+11. **Pre-push hook has no POSIX installer (Low).**
+12. **`gen-config` defaults to an unverified preset (Low).** It warns
     immediately on every generated starter.
 
 ## Non-goals

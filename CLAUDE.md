@@ -28,6 +28,8 @@ cd frontend && npm run build                      # rebuild committed frontend/d
 
 canvouch presets
 canvouch inspect path/to/file.dbc
+canvouch validate-config examples/example/config.json   # paths/diagnostics, no trace parsing
+canvouch explain -c examples/example/config.json        # resolved algorithm/range/DataID per group
 canvouch run -c examples/example/config.json -v
 canvouch run -c examples/example/config.json --show-all          # every verdict
 canvouch run -c examples/example/config.json --fail-on-failure   # CI gate
@@ -75,15 +77,24 @@ consumes `verify/` models only.
   byte-swap) and `RollingCounterVerifier` (stateful per frame-id/signal; PASS,
   STALE, SKIP, RESET, INVALID). Consecutive failures fold into one verdict with
   `repeat_count`, while every sample stays in `get_series()`.
+- **`crc_checker/config_check.py`** — `canvouch validate-config` diagnostics:
+  resolves configured paths, checks workbook sheets/named mappings/output
+  directories, never parses a trace.
 - **`crc_checker/verify/`** — `engine.py` runs the per-frame loop; `runner.py` is
   the single "DBC selection → DataID → CRC config → verify" implementation used
-  by both the CLI and the web API.
+  by both the CLI and the web API. `build_protection_map(..., collect_diagnostics=True)`
+  records the resolved per-group settings behind `canvouch explain` /
+  `inspect --config`.
 - **`crc_checker/report/`** — self-contained HTML report with CRC/RC byte
   highlighting and per-signal RC trend charts. `trends.py` also owns the
-  sample-based accounting helpers. Reports above `REPORT_FULL_MAX_SECTIONS`
+  sample-based accounting helpers; `summary.py` provides the default CLI
+  signal/frame aggregation. Reports above `REPORT_FULL_MAX_SECTIONS`
   (default 30 000, configurable via `output.max_report_sections`) downgrade to a
   failures-only view and say so in the report; aggregates always count
   frames/samples, never folded verdicts.
+- **`cli/`** — `main.py` owns command wiring and argument parsing; `output.py`
+  owns the table/JSON/HTML rendering (aggregated default, `--show-all` raw
+  view, split-part notices).
 
 ### Web version
 

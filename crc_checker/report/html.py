@@ -724,7 +724,8 @@ def _group_verdicts(verdicts: list) -> dict[tuple[float, int, int], list]:
 
 
 def write_html(report: VerifyReport, file_path: str, only_failures: bool = False,
-               max_sections: int | None = None) -> str:
+               max_sections: int | None = None,
+               written_paths: list[str] | None = None) -> str:
     """Write verification results to self-contained HTML file(s) with hex-dump view.
 
     Features:
@@ -749,6 +750,10 @@ def write_html(report: VerifyReport, file_path: str, only_failures: bool = False
     ``only_failures`` / the failures-only downgrade keep the whole frame: its
     passing CRC/RC verdicts and byte highlights stay visible, so a wrong CRC
     next to a healthy counter is distinguishable from missing protection data.
+
+    Args:
+        written_paths: Optional list; every written page path is appended (the
+            split parts included) so the CLI can announce them.
 
     Returns:
         Notice for the caller (empty string = no report-section downgrade or
@@ -865,4 +870,6 @@ def write_html(report: VerifyReport, file_path: str, only_failures: bool = False
                           nav, note)
         with open(path, "w", encoding="utf-8") as f:
             f.write(html)
+        if written_paths is not None:
+            written_paths.append(path)
     return ";".join(caller_notes)

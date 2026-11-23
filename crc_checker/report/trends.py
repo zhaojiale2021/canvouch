@@ -122,9 +122,16 @@ def rc_sample_stats(report) -> tuple[int, int]:
     series is missing (e.g. a report built without RC samples).
     """
     if not report.rc_series:
-        total = sum(1 for v in report.verdicts if v.algorithm != "crc")
-        passed = sum(1 for v in report.verdicts
-                     if v.algorithm != "crc" and v.is_pass)
+        # No series to count: fall back to verdicts, but restore the frames a
+        # folded failure episode represents so the count matches the CLI
+        # aggregation (which also uses ``repeat_count``).
+        rc_verdicts = [v for v in report.verdicts if v.algorithm != "crc"]
+
+        def _samples(verdict):
+            return max(1, int(getattr(verdict, "repeat_count", 1) or 1))
+
+        total = sum(_samples(v) for v in rc_verdicts)
+        passed = sum(_samples(v) for v in rc_verdicts if v.is_pass)
         return passed, total
     total = sum(len(points) for points in report.rc_series.values())
     passed = sum(1 for points in report.rc_series.values()

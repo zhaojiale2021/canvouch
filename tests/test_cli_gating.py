@@ -8,25 +8,15 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from cli.main import cli
-
-EXAMPLE = Path(__file__).resolve().parent.parent / "examples" / "example"
+from tests.config_helpers import EXAMPLE, example_config, run_cli
 
 
 def _config(tmp_path: Path, trace_name: str, **overrides) -> str:
-    """Example config with absolute paths and table output (nothing written)."""
-    data = json.loads((EXAMPLE / "config.json").read_text(encoding="utf-8"))
-    data["dbc"] = str(EXAMPLE / "dbc")
-    data["traces"] = [str(EXAMPLE / "trace" / trace_name)]
-    data["dataid"]["json"] = str(EXAMPLE / "dbc" / "dataid.json")
-    data["output"] = {"format": "table"}
-    data.update(overrides)
-    path = tmp_path / "config.json"
-    path.write_text(json.dumps(data), encoding="utf-8")
-    return str(path)
+    return example_config(tmp_path, trace_name, **overrides)
 
 
 def _run(*args: str):
-    return CliRunner().invoke(cli, ["run", *args])
+    return run_cli("run", *args)
 
 
 def _separated_runner() -> CliRunner:

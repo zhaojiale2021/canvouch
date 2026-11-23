@@ -34,6 +34,77 @@ class RunnerError(ValueError):
 
 
 @dataclass
+class ResolvedGroup:  # pylint: disable=too-many-instance-attributes
+    """One protection group as it will actually be verified.
+
+    Produced only for the resolved-config view (``canvouch explain`` /
+    ``inspect --config``): the values are the final ones after DBC parsing,
+    DataID injection, profile selection and per-message overrides.
+    """
+
+    channel: int | None
+    frame_id: int
+    frame_name: str
+    pair_suffix: str
+    checksum_signal: str
+    checksum_bits: int
+    algorithm: str
+    profile: str
+    range_text: str
+    dataid: int | None
+    dataid_source: str
+    rc_signal: str
+    rc_limit: int | None
+    skip_reason: str = ""
+
+    @property
+    def skipped(self) -> bool:
+        """True when ``crc.skip`` removed the group from verification entirely."""
+        return self.skip_reason == "skip list"
+
+    @property
+    def checksum_dropped(self) -> bool:
+        """True when only the checksum was dropped; the counter still runs."""
+        return self.skip_reason.startswith("checksum dropped")
+
+    @property
+    def status(self) -> str:
+        """Human-readable outcome of the resolution (what the run will do)."""
+        if self.checksum_dropped:
+            return f"{self.skip_reason}; RC still verified"
+        if self.skipped:
+            return "skipped - skip list"
+        if not self.checksum_signal:
+            return "RC only (no checksum signal)"
+        if not self.algorithm:
+            return "CRC not configured (RC only)"
+        return "verify"
+
+
+def _range_text(crc_range) -> str:
+    """Compact description of a resolved CRC data range."""
+    if crc_range is None:
+        return "-"
+    if crc_range.mode == "custom_range":
+        end = "end" if crc_range.end_byte < 0 else str(crc_range.end_byte)
+        return f"custom {crc_range.start_byte}..{end}"
+    return crc_range.mode
+
+
+def _iter_protection_groups(protection_map):
+    """Yield ``(channel, MessageProtection)`` for single and per-channel maps."""
+    if isinstance(protection_map, ChannelProtectionMap):
+        for channel, pm in protection_map.channel_entries():
+            for protections in pm.messages.values():
+                for protection in protections:
+                    yield channel, protection
+        return
+    for protections in protection_map.messages.values():
+        for protection in protections:
+            yield 0, protection
+
+
+@dataclass
 class ProtectionSetup:  # pylint: disable=too-many-instance-attributes
     """Protection map plus what was loaded on the way (for logs, UI and reports)."""
 
@@ -46,6 +117,7 @@ class ProtectionSetup:  # pylint: disable=too-many-instance-attributes
     dataid_fallback: int = 0
     counts: dict[str, int] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)  # human-readable run diagnostics
+    resolved_groups: list[ResolvedGroup] = field(default_factory=list)
 
 
 def build_patterns(cfg: RunConfig) -> dict[str, str] | None:
@@ -214,9 +286,11 @@ def _apply_dataid(  # pylint: disable=too-many-locals,too-many-branches,too-many
     return entries, sheet, 0
 
 
-def build_protection_map(cfg: RunConfig,  # pylint: disable=too-many-locals
+def build_protection_map(  # pylint: disable=too-many-locals,too-many-branches
+                         cfg: RunConfig,
                          trace_sample: str | list[str] | None = None,
                          cancellation_token: CancellationToken | None = None,
+                         collect_diagnostics: bool = False,
                          ) -> ProtectionSetup:
     """Parse DBCs and apply DataID + CRC configuration.
 
@@ -230,6 +304,9 @@ def build_protection_map(cfg: RunConfig,  # pylint: disable=too-many-locals
             ``dbc_merge`` is off.
         cancellation_token: Optional cooperative token checked between the
             setup phases (DBC parse, DataID load, CRC config).
+        collect_diagnostics: Record one :class:`ResolvedGroup` per protection
+            group on ``ProtectionSetup.resolved_groups`` (resolved-config view).
+            Off for normal verification runs.
 
     Raises:
         RunnerError: no DBC configured, or no DBC matches the trace channels.
@@ -285,6 +362,14 @@ def build_protection_map(cfg: RunConfig,  # pylint: disable=too-many-locals
             notes.append(f"DataID default (0x{cfg.dataid_default:04X}): "
                          f"{applied} groups")
 
+    # Snapshot every group before config application: ``crc.skip`` removes
+    # objects from the map and comment classification may drop the checksum
+    # signal, and the resolved-config view must still be able to name them.
+    before_config = [
+        (channel, protection, protection.checksum_signal is not None)
+        for channel, protection in _iter_protection_groups(protection_map)
+    ] if collect_diagnostics else []
+
     counts = apply_crc_config(cfg, protection_map)
     check_cancelled()
     for key, label in (
@@ -297,6 +382,20 @@ def build_protection_map(cfg: RunConfig,  # pylint: disable=too-many-locals
         if counts.get(key):
             notes.append(f"{label}: {counts[key]} groups")
 
+    resolved_groups: list[ResolvedGroup] = []
+    if collect_diagnostics:
+        present = {id(protection) for _, protection
+                   in _iter_protection_groups(protection_map)}
+        for channel, protection, had_checksum in before_config:
+            if id(protection) not in present:
+                skip_reason = "skip list"
+            elif had_checksum and protection.checksum_signal is None:
+                skip_reason = "checksum dropped (DBC comment: not computable)"
+            else:
+                skip_reason = ""
+            resolved_groups.append(
+                _resolved_group(channel, protection, skip_reason))
+
     return ProtectionSetup(
         protection_map=protection_map,
         dbc_names=[Path(p).name for p in dbc_paths],
@@ -307,6 +406,36 @@ def build_protection_map(cfg: RunConfig,  # pylint: disable=too-many-locals
         dataid_fallback=dataid_fallback,
         counts=counts,
         notes=notes,
+        resolved_groups=resolved_groups,
+    )
+
+
+def _resolved_group(channel: int | None, protection,
+                    skip_reason: str = "") -> ResolvedGroup:
+    """Build the resolved-config row for one protection group."""
+    signal = protection.checksum_signal
+    rc_signal = protection.rolling_counter_signal
+    if rc_signal is None:
+        rc_limit = None
+    elif protection.rc_max_valid is not None:
+        rc_limit = protection.rc_max_valid
+    else:
+        rc_limit = (1 << rc_signal.length) - 1
+    return ResolvedGroup(
+        channel=channel,
+        frame_id=protection.frame_id,
+        frame_name=protection.frame_name,
+        pair_suffix=protection.pair_suffix,
+        checksum_signal=signal.name if signal else "",
+        checksum_bits=signal.length if signal else 0,
+        algorithm=protection.crc_params.name if protection.crc_params else "",
+        profile=protection.e2e_profile or protection.crc_profile,
+        range_text=_range_text(protection.crc_range),
+        dataid=protection.dataid,
+        dataid_source=protection.dataid_source,
+        rc_signal=rc_signal.name if rc_signal else "",
+        rc_limit=rc_limit,
+        skip_reason=skip_reason,
     )
 
 

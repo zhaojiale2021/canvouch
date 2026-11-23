@@ -43,6 +43,8 @@ pip install -e .
 canvouch run -c examples/example/config.json -v
 canvouch presets
 canvouch inspect examples/example/dbc/network.dbc
+canvouch validate-config examples/example/config.json
+canvouch explain -c examples/example/config.json
 ```
 
 预期结果：160 帧、320 项校验、100% 通过。
@@ -52,9 +54,16 @@ canvouch inspect examples/example/dbc/network.dbc
 python -m cli.main run -c examples/example/config_bad.json -v
 ```
 
-表格输出默认只列失败项，加 `--show-all` 才打印全部 verdict。作为 CI 门禁：
+表格输出默认按信号汇总（按样本计数，并给出首次失败时间），大 trace 上 CRC
+坏了也不会一帧一行。加 `--show-all` 查看原始 verdict 列表，`--group-by frame`
+改为按帧汇总，`--only-failures`（`canvouch verify` 上可用，或配置里的
+`output.only_failures`）只看失败信号。作为 CI 门禁：
 `--fail-on-failure` 有任何失败就退出 1，`--min-pass-rate 99.5`
 低于阈值退出 1（`canvouch verify` 同样支持）。
+
+`canvouch validate-config` 不解析 trace，只检查路径、工作表、列映射和输出目录；
+`canvouch explain`（或 `inspect --config`）会打印每个保护组实际使用的算法、
+E2E profile、CRC 范围、DataID 值/来源和计数器上限。
 
 ```bash
 canvouch run -c examples/example/config.json --fail-on-failure
