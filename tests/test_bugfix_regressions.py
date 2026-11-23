@@ -36,7 +36,7 @@ try:
 except ImportError:  # canmatrix <= 1.2 re-exports both classes directly
     from canmatrix import ArbitrationId, Frame
 
-from cli.main import _print_table, _report_output_path
+from cli.output import _print_table, _report_output_path
 from crc_checker.config import RunConfig, apply_crc_config
 from crc_checker.crc.classify import (
     classify_crc_algo, parse_sum_byte_range,

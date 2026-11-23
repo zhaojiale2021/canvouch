@@ -32,6 +32,7 @@ class MessageProtection:  # pylint: disable=too-many-instance-attributes
     crc_range: CRCRange | None = None                          # Data range (set by user/config)
     dataid: int | None = None                                  # 16-bit DataID from AUTOSAR E2E
     dataid_name: str = ""            # Entry name matched in DataIDMap (msg/signal name)
+    dataid_source: str = ""          # Where the value came from (workbook/default/comment)
     crc_profile: str = ""               # Profile hint from DataID (e.g. "Profile 1A")
     e2e_profile: str = ""               # Resolved E2E profile name (e.g. "Profile 5")
     checksum_comment: str = ""          # DBC comment of the checksum signal
@@ -286,6 +287,7 @@ class DBCProtectionMap(ProtectionMapOps):
                     dataid = parse_dataid_from_comment(prot.checksum_comment)
                     if dataid is not None and prot.dataid is None:
                         prot.dataid = dataid
+                        prot.dataid_source = "DBC comment"
                     if profile_key_from_hint(prot.e2e_profile) != 'p01':
                         # Comment-only P01 (no profile table): apply the
                         # configured (or built-in) P01 layout and counter limit.
@@ -437,6 +439,9 @@ class DBCProtectionMap(ProtectionMapOps):
                     prot.dataid = dataid
                     prot.dataid_name = matched_name
                     prot.crc_profile = profile
+                    prot.dataid_source = (
+                        f"workbook ({dataid_map.sheet_name})"
+                        if dataid_map.sheet_name else "workbook")
                     applied += 1
         return applied
 
@@ -454,6 +459,7 @@ class DBCProtectionMap(ProtectionMapOps):
             for prot in prot_list:
                 if prot.checksum_signal and prot.dataid is None:
                     prot.dataid = default
+                    prot.dataid_source = "default"
                     applied += 1
         return applied
 
@@ -476,6 +482,7 @@ class DBCProtectionMap(ProtectionMapOps):
                         prot.dataid_name = prot.checksum_signal.name
                         prot.crc_profile = dataid_map.get_profile(
                             prot.frame_id, prot.checksum_signal.name) or ""
+                        prot.dataid_source = "CH0 fallback"
                         applied += 1
         return applied
 
@@ -742,6 +749,24 @@ class ChannelProtectionMap(ProtectionMapOps):
                 seen.add(id(pm))
                 result.append(pm)
         return result
+
+    def channel_entries(self) -> list[tuple[int | None, DBCProtectionMap]]:
+        """``(channel, map)`` pairs for diagnostics.
+
+        Channels are sorted numerically; the fallback map (used for channels
+        that first appear after the sampling window) is reported once under
+        ``None`` unless it is also an explicitly mapped channel's map.
+        """
+        entries: list[tuple[int | None, DBCProtectionMap]] = []
+        seen: set[int] = set()
+        for channel, pm in sorted(self._channel_maps.items()):
+            if id(pm) in seen:
+                continue
+            seen.add(id(pm))
+            entries.append((channel, pm))
+        if self._fallback is not None and id(self._fallback) not in seen:
+            entries.append((None, self._fallback))
+        return entries
 
     def get_protections(self, frame_id: int, channel: int = 0) -> list[MessageProtection]:
         """Get protection groups for a frame, using channel-specific DBC."""

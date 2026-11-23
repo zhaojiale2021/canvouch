@@ -45,6 +45,8 @@ pip install -e .
 canvouch run -c examples/example/config.json -v
 canvouch presets
 canvouch inspect examples/example/dbc/network.dbc
+canvouch validate-config examples/example/config.json
+canvouch explain -c examples/example/config.json
 ```
 
 Expected output: 160 frames, 320 checks, 100 % pass.
@@ -54,10 +56,19 @@ Expected output: 160 frames, 320 checks, 100 % pass.
 python -m cli.main run -c examples/example/config_bad.json -v
 ```
 
-Table output lists failures only by default; add `--show-all` to print every
-verdict. Use it as a gate: `--fail-on-failure` exits 1 on any failed check, and
-`--min-pass-rate 99.5` exits 1 below the threshold (both also work on
-`canvouch verify`; the pre-rename `crc-check` command still works as an alias).
+Table output is a per-signal summary by default (sample counts, first failure),
+so a broken CRC on a large trace does not print one row per frame. Add
+`--show-all` for the raw verdict list, `--group-by frame` for a per-frame
+summary, or `--only-failures` (on `canvouch verify`, or `output.only_failures`
+in a config) to hide passing signals. Use it as a gate:
+`--fail-on-failure` exits 1 on any failed check, and `--min-pass-rate 99.5`
+exits 1 below the threshold (both also work on `canvouch verify`; the
+pre-rename `crc-check` command still works as an alias).
+
+`canvouch validate-config` checks paths, workbook sheets, mappings and output
+directories without parsing a trace. `canvouch explain` (or
+`inspect --config`) prints the algorithm, E2E profile, CRC range, DataID
+value/source and counter limit every protection group will actually use.
 
 ```bash
 canvouch run -c examples/example/config.json --fail-on-failure
