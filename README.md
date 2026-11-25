@@ -40,6 +40,9 @@ pip install -r requirements.txt
 # Run the bundled example (CLI; no packaging step, no .exe)
 python -m cli.main run -c examples/example/config.json -v
 
+# Same synthetic DBC + payloads, as ASC instead of BLF
+python -m cli.main run -c examples/example/config_asc.json -v
+
 # Optional: install the `canvouch` command
 pip install -e .
 canvouch run -c examples/example/config.json -v

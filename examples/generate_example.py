@@ -205,7 +205,8 @@ def _frames(bad: bool = False) -> list[tuple[float, int, bytes]]:  # pylint: dis
 
 def _write_trace(path: Path, bad: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with can.BLFWriter(str(path)) as writer:
+    writer_class = can.BLFWriter if path.suffix.lower() == ".blf" else can.ASCWriter
+    with writer_class(str(path)) as writer:
         for timestamp, frame_id, data in _frames(bad):
             writer.on_message_received(can.Message(
                 timestamp=timestamp, arbitration_id=frame_id,
@@ -225,8 +226,16 @@ def main() -> None:
     bad_config = dict(CONFIG, traces=["trace/example_bad.blf"])
     (HERE / "config_bad.json").write_text(
         json.dumps(bad_config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    asc_config = dict(CONFIG, traces=["trace/example.asc"])
+    (HERE / "config_asc.json").write_text(
+        json.dumps(asc_config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    asc_bad_config = dict(CONFIG, traces=["trace/example_bad.asc"])
+    (HERE / "config_asc_bad.json").write_text(
+        json.dumps(asc_bad_config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     _write_trace(HERE / "trace" / "example.blf")
     _write_trace(HERE / "trace" / "example_bad.blf", bad=True)
+    _write_trace(HERE / "trace" / "example.asc")
+    _write_trace(HERE / "trace" / "example_bad.asc", bad=True)
     print(f"example written to {HERE}")
 
 

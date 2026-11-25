@@ -30,6 +30,20 @@ base hex timestamps absolute
 FD_DATA_32 = " ".join(["00"] * 32)
 
 
+def test_shipped_example_asc_round_trips_every_frame():
+    """The downloadable ASC example is complete and decodable."""
+    example = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "examples",
+        "example",
+        "trace",
+        "example.asc",
+    )
+    with TraceReader(example) as reader:
+        frames = list(reader.frames())
+    assert len(frames) == 160
+
+
 class TestCanoe7Asc(unittest.TestCase):
     """The _CanoeAscReader fallback for CANoe 7.x FD lines."""
 

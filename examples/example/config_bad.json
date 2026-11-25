@@ -1,5 +1,5 @@
 {
-  "_comment": "Synthetic example with deliberately broken frames. canvouch run -c examples/example/config_bad.json -v",
+  "_comment": "Synthetic example. canvouch run -c examples/example/config.json -v",
   "dbc": "dbc",
   "traces": [
     "trace/example_bad.blf"
@@ -22,6 +22,9 @@
   },
   "range": {
     "mode": "exclude_crc"
+  },
+  "rc": {
+    "max_valid": 14
   },
   "dataid": {
     "json": "dbc/dataid.json",
